@@ -1,7 +1,6 @@
-stepper motor control with raspberry pi, with C.
-<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/e905bad1-1447-4fd0-aa8f-7813a98164aa" />
 
+Study of basic_control_stepper motor
 
+raspberry pi 4B, STEPPER motor driver, and motor
 
-2AXIS Version
-<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/46d20750-e411-4303-a6a4-254a74426914" />
+Goal: make own teaching pendant robot
