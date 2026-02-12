@@ -128,7 +128,7 @@
 	// 쉼표(,)로 값을 구분하는 csv 형식
 	// \n으로 줄바꿈하여 다음 포인트로 이동
 	
-	for (int i = 0; g_teach_count; i++) {
+	for (int i = 0;i < g_teach_count; i++) {
 		fprintf(fp, "%.2f,%.2f,%.1f,%.1f\n",
 				g_teach_points[i].x_mm,
 				g_teach_points[i].y_mm,
@@ -152,7 +152,7 @@
 		 filename = DEFAULT_TEACH_FILE;
 	 }
 
-	 FILE *fp = fopen(filename, "w");
+	 FILE *fp = fopen(filename, "r");
 	 if (fp == NULL) {
 		 printf("오류: 파일 '%s'을 열 수 없습니다.\n", filename);
 		 return -1;	 
@@ -184,7 +184,7 @@
 		 
 		 // sscanf로 csv 형식 파싱
 		 float x, y, spd, acc;
-		 int parsed == sscanf(line, "%f,%f,%f,%f",&x,&y,&spd,&acc);
+		 int parsed = sscanf(line, "%f,%f,%f,%f",&x,&y,&spd,&acc);
 		 
 		 if (parsed == 4) {
 			 // 4개 값 모두 정상적으로 읽힌 경우에만 저장
@@ -192,6 +192,7 @@
 			 g_teach_points[g_teach_count].y_mm				=y;
 			 g_teach_points[g_teach_count].speed_mm_s		=spd;
 			 g_teach_points[g_teach_count].accel_mm_s2		=acc;
+			 g_teach_count++;
 		 } else {
 			 // 파싱 실패, 사용자가 수동 편집 중 실수하면 발생 가능성
 			 // 해당 줄만 무시하고 계속 읽기
