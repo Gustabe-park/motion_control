@@ -219,9 +219,6 @@
 	 return 0;
 }
 
-
-
-
  //저장된 포인트들을 순서대로 연속 실행하는 함수	
  void runTeachPoints(void) {
 

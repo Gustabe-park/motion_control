@@ -11,10 +11,13 @@
  * LOAD [파일명]  : 텍스트 파일에서 포인트 불러오기
  * RUN            : 저장된 포인트 연속 실행
  */
-
+#include "interpolate.h"	/* 선형 보간 기능 사용 */
 #include "command.h"
 #include "accel.h"
-#include "teaching.h"   /* 티칭 펜던트 기능 */
+#include "teaching.h"   	/* 티칭 펜던트 기능 */
+#include "homing.h"     	/* 호밍 기능 */
+#include "gcode_parser.h" 	/*gcode파서*/
+#include "gcode_runner.h"	/*gcode 파일 실행*/
 #include <stdio.h>
 #include <string.h>
 
@@ -34,6 +37,7 @@ void initCommandSystem(void) {
 	 printf("\n ===== 명령어 시스템 초기화 =====\n");
 	 printf("기본 속도: %.1f mm/s \n", g_speed_mm_s);
 	 printf("가속 스텝: %.1f mm/s2\n", g_accel_mm_s2);
+	 initMotionBuffer();     // ← 이 한 줄 추가
 	 printf("준비완료\n\n");
 }
 
@@ -41,32 +45,37 @@ void runCommandLoop(void) {
 	 char command[100];		// 명령어 저장 버퍼
 	 char keyword[50];		// 첫 단어 (명령어)
 
-	 printf("====명령어 모드 시작====\n");
-	 printf("사용 가능한 명령어:\n");
-	 printf(" SPEED<값>		-속도 설정\n");
-	 printf(" ACCEL<값>		-가속 스텝 설정\n");
-	 printf(" X <값>		-X축 이동\n");
-	 printf(" Y <값>		-Y축 설정\n");
-	 printf(" HOME		-원점 복귀 \n");
-
-	 /*
-	  * ====== 티칭 펜던트 명령어 안내 (추가) ======
-	  * 사용자가 어떤 명령어를 사용할 수 있는지 표시
-	  */
-	 printf(" --- 티칭 명령어 ---\n");
-	 printf(" TEACH		-현재 위치 저장\n");
-	 printf(" LIST		-저장된 포인트 보기\n");
-	 printf(" DELETE <번호>	-포인트 삭제\n");
-	 printf(" CLEAR		-모든 포인트 삭제\n");
-	 printf(" SAVE [파일명]	-파일로 저장\n");
-	 printf(" LOAD [파일명]	-파일에서 불러오기\n");
-	 printf(" RUN		-포인트 연속 실행\n");
-	 printf("\n  [모션 버퍼 - Step 12]\n");
-	 printf("  SEND          - 티칭 포인트 → 버퍼 전송\n");
-	 printf("  EXEC          - 버퍼 실행\n");
-	 printf("  BUFFER        - 버퍼 상태 확인\n");
-	 printf("  FLUSH         - 버퍼 비우기\n");
-	 printf(" QUIT		-종료\n\n");
+    printf("====명령어 모드 시작====\n");
+    printf("사용 가능한 명령어:\n");
+    printf(" SPEED <값>      - 속도 설정\n");
+    printf(" ACCEL <값>      - 가속도 설정\n");
+    printf(" X <값>          - X축 이동\n");
+    printf(" Y <값>          - Y축 이동\n");
+    printf(" HOME            - 소프트 원점 복귀 (좌표 0으로 이동)\n");
+    printf(" --- 호밍 명령어 ---\n");
+    printf(" HOMING          - 리미트 스위치 기반 물리적 원점 탐색 (Y->X)\n");
+    printf(" HOMEX           - X축만 호밍\n");
+    printf(" HOMEY           - Y축만 호밍\n");
+    printf(" LIMIT           - 리미트 스위치 상태 확인\n");
+    printf(" --- 보간 명령어 ---\n");
+    printf(" LINEAR <X> <Y>  - XY 동시 직선 이동 (Bresenham)\n");
+    printf(" --- 티칭 명령어 ---\n");
+    printf(" TEACH           - 현재 위치 저장\n");
+    printf(" LIST            - 저장된 포인트 보기\n");
+    printf(" DELETE <번호>   - 포인트 삭제\n");
+    printf(" CLEAR           - 모든 포인트 삭제\n");
+    printf(" SAVE [파일명]   - 파일로 저장\n");
+    printf(" LOAD [파일명]   - 파일에서 불러오기\n");
+    printf(" RUN             - 포인트 연속 실행\n");
+    printf(" --- 모션 버퍼 ---\n");
+    printf(" SEND            - 티칭 포인트 -> 버퍼 전송\n");
+    printf(" EXEC            - 버퍼 실행\n");
+    printf(" BUFFER          - 버퍼 상태 확인\n");
+    printf(" FLUSH           - 버퍼 비우기\n");
+    printf(" --- G-code ---\n");                          /* ← 추가 */
+    printf(" GCODE <명령어>  - G-code 한 줄 직접 실행\n");/* ← 추가 */
+    printf(" GFILE <파일명>  - .gcode 파일 실행\n");      /* ← 추가 */
+    printf(" QUIT            - 종료\n\n");
 
 	 while (g_running) {
 		 printf("CMD>");
@@ -101,7 +110,7 @@ void runCommandLoop(void) {
 			 float value;
 			 if (sscanf(command,"%*s %f", &value) == 1) {
 				 g_accel_mm_s2 = value;
-				 printf("-> 가속 설정: %.1f mm/s\n", g_speed_mm_s);
+				 printf("-> 가속 설정: %.1f mm/s2\n", g_accel_mm_s2);
 			 } else {
 				 printf("오류: ACCEL 값을 입력하세요 (예: ACCEL 2000)\n");
 			 }
@@ -290,6 +299,82 @@ void runCommandLoop(void) {
 		  else if (strcmp(keyword, "FLUSH") == 0) {
 			  clearMotionBuffer();
 		  }
+
+        /* ── 선형 보간 (수정: while 루프 안으로 이동) ── */
+        else if (strcmp(keyword, "LINEAR") == 0) {
+            float x_target, y_target;
+            if (sscanf(command, "%*s %f %f", &x_target, &y_target) == 2) {
+                printf("-> X=%.2fmm, Y=%.2fmm 직선 이동 중...\n", x_target, y_target);
+                moveLinear(x_target, y_target, g_speed_mm_s, g_accel_mm_s2);
+                printf("-> 이동 완료!\n");
+            } else {
+                printf("오류: XY 좌표를 입력하세요 (예: LINEAR 50 30)\n");
+            }
+        }
+
+        /* ── 호밍 명령어 (수정: while 루프 안으로 이동) ── */
+        else if (strcmp(keyword, "HOMING") == 0) {
+            int result = runHomingSequence();
+            if (result != HOMING_OK) {
+                printf("호밍 실패! 에러 코드: %d\n", result);
+                printf("-> 배선 및 스위치 상태 확인 후 다시 시도하세요.\n");
+            }
+        }
+        else if (strcmp(keyword, "HOMEX") == 0) {
+            int result = homeAxisX();
+            if (result != HOMING_OK) {
+                printf("X축 호밍 실패! 에러 코드: %d\n", result);
+            }
+        }
+        else if (strcmp(keyword, "HOMEY") == 0) {
+            int result = homeAxisY();
+            if (result != HOMING_OK) {
+                printf("Y축 호밍 실패! 에러 코드: %d\n", result);
+            }
+        }
+        else if (strcmp(keyword, "LIMIT") == 0) {
+            int x_state = isXLimitTriggered();
+            int y_state = isYLimitTriggered(); /* 수정: 원본은 isXLimitTriggered 중복 */
+            printf("\n===== 리미트 스위치 상태 =====\n");
+            printf("  X_LIMIT_MIN (GPIO %d): %s\n",
+                   X_LIMIT_MIN, x_state ? "감지됨 [LOW]" : "미감지 [HIGH]");
+            printf("  Y_LIMIT_MIN (GPIO %d): %s\n",
+                   Y_LIMIT_MIN, y_state ? "감지됨 [LOW]" : "미감지 [HIGH]");
+            printf("==============================\n");
+
+		}
+        /*
+         * GCODE 명령어
+         * - G-code 한 줄을 직접 입력해서 즉시 실행
+         * - 사용법: CMD> GCODE G1 X50 Y30 F3000
+         *
+         * sscanf에서 "%*s %[^\n]":
+         *   %*s    : 첫 단어(GCODE)를 읽고 버림
+         *   %[^\n] : 나머지 줄 전체를 문자열로 읽음
+         *            (공백 포함, 개행 전까지)
+         */
+		 else if (strcmp(keyword,"GCODE") == 0){
+			 char gcode_line[100];
+			 if (sscanf(command,"%*s %[^\n]", gcode_line) == 1){
+				 runGcodeLine(gcode_line);
+			 } else {
+				 printf("오류: G-code를 입력하세요 (예: GCODE G1 X50 Y30 F3000)\n");
+			 }
+		 }
+		 
+	    /*
+         * GFILE 명령어
+         * - .gcode 파일을 읽어 순차 실행
+         * - 사용법: CMD> GFILE test.gcode
+         */
+		 else if (strcmp(keyword, "GFILE") == 0){
+			 char fname[100];
+			 if (sscanf(command,"%*s %s",fname) == 1){
+				 executeGcodeFile(fname);
+			 } else {
+	                printf("오류: 파일명을 입력하세요 (예: GFILE test.gcode)\n");
+            }
+        }			 
 
 		else {
 			printf("알 수 없는 명령어: %s\n", keyword);

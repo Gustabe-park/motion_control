@@ -14,8 +14,8 @@
 	int dir_pin;
 	int step_pin;
 	long current_steps;			//현재 위치 (steps)
-	double current_mm;			//현재 위치 (mm)
-	double steps_per_mm;		//측마다 스텝값 다름 가정
+	float current_mm;			//현재 위치 (mm)
+	float steps_per_mm;		//측마다 스텝값 다름 가정
  } Axis;
  
  //============전역 변수 (extern 선언)======

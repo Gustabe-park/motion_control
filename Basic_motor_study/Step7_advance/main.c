@@ -11,6 +11,7 @@
  #include "configuration.h"
  #include "accel.h"
  #include "command.h" // <- 추가
+ #include "homing.h" // step 15 추가
  #include <wiringPi.h>
  #include <stdio.h>
  #include <stdbool.h>
