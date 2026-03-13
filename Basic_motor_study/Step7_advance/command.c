@@ -1,16 +1,17 @@
 /*
  * command.c
  * 명령어 처리 및 모터 설정값 관리
+ * Step 18: 상태 머신 연동 추가
  *
- * ============ 추가된 티칭 명령어 ============
- * TEACH          : 현재 위치를 티칭 포인트로 저장
- * LIST           : 저장된 포인트 목록 출력
- * DELETE <번호>  : 특정 포인트 삭제
- * CLEAR          : 모든 포인트 삭제
- * SAVE [파일명]  : 포인트를 텍스트 파일로 저장
- * LOAD [파일명]  : 텍스트 파일에서 포인트 불러오기
- * RUN            : 저장된 포인트 연속 실행
+ * ===== Step 18에서 변경된 내용 =====
+ * 1. #include "statemachine.h" 추가
+ * 2. initCommandSystem()에서 initStateMachine() 호출
+ * 3. 각 명령 실행 전 isAllowed() 체크 추가
+ * 4. HOMING 명령: 실행 전후 setState() 호출
+ * 5. STATUS 명령 추가: 현재 상태 출력
+ * 6. RESET 명령 추가: ERROR 상태 복구
  */
+ 
 #include "interpolate.h"	/* 선형 보간 기능 사용 */
 #include "command.h"
 #include "accel.h"
@@ -18,9 +19,9 @@
 #include "homing.h"     	/* 호밍 기능 */
 #include "gcode_parser.h" 	/*gcode파서*/
 #include "gcode_runner.h"	/*gcode 파일 실행*/
+#include "statemachine.h"   /* ← Step 18 추가 */
 #include <stdio.h>
 #include <string.h>
-
 //========= 전역 변수 실제 생성==========
 // command.h에서는 extern으로 "선언"만 했고,
 // 여기서 실제로 "생성"하고 초기값 설정
@@ -32,19 +33,18 @@ bool g_running = true;				// 프로그램 실행 관리
 // ===== 초기화 함수 =========
 // 프로그램 시작할 떄,한 번 호출
 // 설정값을 기본값으로 리셋
-
 void initCommandSystem(void) {
 	 printf("\n ===== 명령어 시스템 초기화 =====\n");
 	 printf("기본 속도: %.1f mm/s \n", g_speed_mm_s);
 	 printf("가속 스텝: %.1f mm/s2\n", g_accel_mm_s2);
 	 initMotionBuffer();     // ← 이 한 줄 추가
+	 initStateMachine();     /* ← Step 18 추가: 상태 머신 초기화 */
 	 printf("준비완료\n\n");
 }
 
 void runCommandLoop(void) {
 	 char command[100];		// 명령어 저장 버퍼
 	 char keyword[50];		// 첫 단어 (명령어)
-
     printf("====명령어 모드 시작====\n");
     printf("사용 가능한 명령어:\n");
     printf(" SPEED <값>      - 속도 설정\n");
@@ -106,6 +106,8 @@ void runCommandLoop(void) {
 			 }
 		 }
 
+//////////////////////////////여기서 부터 같음////////////////////////////////////
+		//ACCEL: 상태 무관하게 설정 가능
 		 else if (strcmp(keyword, "ACCEL") == 0) {
 			 float value;
 			 if (sscanf(command,"%*s %f", &value) == 1) {
@@ -116,78 +118,52 @@ void runCommandLoop(void) {
 			 }
 		 }
 
+		// X이동: isAllowed(CMD_MOVE) 체크 *현재는 싱글 스레드라, 굳이 스테이트 안바꿔도 추가 명령어가 입력되지 않음
 		 else if (strcmp(keyword, "X") == 0) {
+			 if (!isAllowed(CMD_MOVE)) continue; //상태 체크
 			 float target;
 			 if (sscanf(command,"%*s %f", &target) == 1 ){
 				 printf("-> X축 %.2fmm로 이동 중...\n", target);
-
-				 //변환 함수 실행
 				 moveAxisBySpeed(&x_axis, target, g_speed_mm_s, g_accel_mm_s2);
-
 				 printf("->이동 완료!\n");
 			 } else {
 				 printf("오류: X 좌표를 입력하세요 (예: X 50.0)\n");
 			 }
 		 }
 
+		// Y이동
 		 else if (strcmp(keyword, "Y") == 0) {
+			 if (!isAllowed(CMD_MOVE)) continue; //상태 체크			 
 			 float target;
 			 if (sscanf(command,"%*s %f", &target) == 1 ){
 				 printf("-> Y축 %.2fmm로 이동 중...\n", target);
-
-				 //변환 함수 실행
 				 moveAxisBySpeed(&y_axis, target, g_speed_mm_s, g_accel_mm_s2);
-
 				 printf("->이동 완료!\n");
 			 } else {
 				 printf("오류: Y 좌표를 입력하세요 (예: X 50.0)\n");
 			 }
 		 }
 
+		// Home: 소프트 원점 복귀
 		 else if (strcmp(keyword, "HOME") == 0) {
+            if (!isAllowed(CMD_MOVE)) continue;  /* ← 상태 체크 */			 
 			printf("-> 원점 복귀 중...\n");
 			moveAxisBySpeed(&x_axis, 0.0, g_speed_mm_s, g_accel_mm_s2);
 			moveAxisBySpeed(&y_axis, 0.0, g_speed_mm_s, g_accel_mm_s2);
 		 }
 
-		 /* ====================================================
-		  * ========== 티칭 펜던트 명령어 처리 (추가) ==========
-		  * ====================================================
-		  */
-
-		 /*
-		  * TEACH 명령어
-		  * - 현재 모터의 X, Y 위치를 티칭 포인트로 저장
-		  * - 사용법: CMD> TEACH
-		  * - 현재 설정된 SPEED, ACCEL 값도 함께 저장됨
-		  *
-		  * 사용 예시:
-		  *   CMD> X 10       ← X축을 10mm로 이동
-		  *   CMD> Y 20       ← Y축을 20mm로 이동
-		  *   CMD> TEACH      ← 현재 위치(10, 20)를 포인트로 저장
-		  */
+		// Teach
 		 else if (strcmp(keyword, "TEACH") == 0) {
+            if (!isAllowed(CMD_TEACH)) continue;  /* ← 상태 체크 */			 
 			 teachCurrentPosition();
 		 }
 
-		 /*
-		  * LIST 명령어
-		  * - 저장된 모든 티칭 포인트를 표 형태로 출력
-		  * - 사용법: CMD> LIST
-		  */
+		// LIST: 상태 무관하게 허용
 		 else if (strcmp(keyword, "LIST") == 0) {
 			 listTeachPoints();
 		 }
 
-		 /*
-		  * DELETE 명령어
-		  * - 특정 번호의 포인트를 삭제
-		  * - 사용법: CMD> DELETE 2  ← 2번 포인트 삭제
-		  *
-		  * sscanf에서 "%*s %d":
-		  *   %*s : 첫 단어(DELETE)를 읽고 버림 (*는 무시 표시)
-		  *   %d  : 두 번째 값을 정수로 읽음 (삭제할 번호)
-		  */
+		// DELETE
 		 else if (strcmp(keyword, "DELETE") == 0) {
 			 int index;
 			 if (sscanf(command, "%*s %d", &index) == 1) {
@@ -197,45 +173,22 @@ void runCommandLoop(void) {
 			 }
 		 }
 
-		 /*
-		  * CLEAR 명령어
-		  * - 저장된 모든 포인트를 삭제
-		  * - 사용법: CMD> CLEAR
-		  */
+		// CLEAR
 		 else if (strcmp(keyword, "CLEAR") == 0) {
 			 clearTeachPoints();
 		 }
 
-		 /*
-		  * SAVE 명령어
-		  * - 포인트들을 텍스트 파일로 저장
-		  * - 사용법: CMD> SAVE              ← 기본 파일명 (teach_points.txt)
-		  *           CMD> SAVE mypath.txt   ← 지정한 파일명으로 저장
-		  *
-		  * sscanf 반환값 확인:
-		  *   - 파일명까지 읽으면 반환값 1 → fname에 파일명 저장
-		  *   - 파일명이 없으면 반환값 0 또는 EOF → NULL 전달 (기본 파일명 사용)
-		  */
+		// SAVE
 		 else if (strcmp(keyword, "SAVE") == 0) {
 			 char fname[100];
 			 if (sscanf(command, "%*s %s", fname) == 1) {
-				 /* 사용자가 파일명을 지정한 경우 */
-				 saveTeachPoints(fname);
-			 } else {
-				 /* 파일명 생략 → 기본 파일명 사용 */
-				 saveTeachPoints(NULL);
+				 saveTeachPoints(fname); 				 /* 사용자가 파일명을 지정한 경우 */
+			 } else {				 
+				 saveTeachPoints(NULL);					/* 파일명 생략 → 기본 파일명 사용 */
 			 }
 		 }
 
-		 /*
-		  * LOAD 명령어
-		  * - 텍스트 파일에서 포인트를 불러옴
-		  * - 사용법: CMD> LOAD              ← 기본 파일명에서 불러오기
-		  *           CMD> LOAD mypath.txt   ← 지정한 파일에서 불러오기
-		  *
-		  * 주의: LOAD하면 기존 메모리의 포인트가 삭제되고
-		  *       파일 내용으로 교체된다!
-		  */
+		// LOAD
 		 else if (strcmp(keyword, "LOAD") == 0) {
 			 char fname[100];
 			 if (sscanf(command, "%*s %s", fname) == 1) {
@@ -245,63 +198,36 @@ void runCommandLoop(void) {
 			 }
 		 }
 
-		 /*
-		  * RUN 명령어
-		  * - 저장된 포인트들을 0번부터 순서대로 자동 실행
-		  * - 사용법: CMD> RUN
-		  *
-		  * 이것이 티칭 펜던트의 핵심!
-		  * TEACH로 저장한 경로를 자동으로 재현한다.
-		  */
+		// RUN
 		 else if (strcmp(keyword, "RUN") == 0) {
+			 if (!isAllowed(CMD_TEACH)) continue; //상태 체
 			 runTeachPoints();
 		 }
 
-		 // ========== Step 12: 모션 버퍼 명령어 ==========
-		 
-		 /*
-		  * SEND 명령어
-		  * - 티칭 포인트 배열 → 모션 버퍼로 전송
-		  * - 사용법: CMD> SEND
-		  */
-
+		// SEND
 		 else if (strcmp(keyword, "SEND") == 0) {
 			 sendToMotionBuffer();
 		 }
 		
-		 /*
-		  * EXEC 명령어
-		  * - 모션 버퍼에서 포인트를 꺼내면서 실행
-		  * - 사용법: CMD> EXEC
-		  */
-		  
+		// EXEC
 		  else if (strcmp(keyword, "EXEC") == 0) {
+			 if (!isAllowed(CMD_MOVE)) continue; //상태 체
 			  runFromMotionBuffer();
 		  }
 		  
-		 /*
-		  * BUFFER 명령어
-		  * - 버퍼 상태 확인 (사용량, 여유 공간, front/rear 위치)
-		  * - 사용법: CMD> BUFFER
-		  */
-		  
+		// BUFFER
 		  else if (strcmp(keyword, "BUFFER") == 0) {
 			  showBufferStatus();
 		  }
 		  
-		 /*
-		  * FLUSH 명령어
-		  * - 모션 버퍼 비우기
-		  * - 사용법: CMD> FLUSH
-		  * - 주의: 실행 대기 중인 모든 명령이 삭제됩니다
-		  */
-
+		// FLUSH
 		  else if (strcmp(keyword, "FLUSH") == 0) {
 			  clearMotionBuffer();
 		  }
 
-        /* ── 선형 보간 (수정: while 루프 안으로 이동) ── */
+		// LINEAR
         else if (strcmp(keyword, "LINEAR") == 0) {
+			 if (!isAllowed(CMD_MOVE)) continue; //상태 체크
             float x_target, y_target;
             if (sscanf(command, "%*s %f %f", &x_target, &y_target) == 2) {
                 printf("-> X=%.2fmm, Y=%.2fmm 직선 이동 중...\n", x_target, y_target);
@@ -312,48 +238,76 @@ void runCommandLoop(void) {
             }
         }
 
-        /* ── 호밍 명령어 (수정: while 루프 안으로 이동) ── */
+        /* ── HOMING: 상태 전환 포함 ← Step 18 핵심 변경 ── */
+        /*
+         * 이전 코드와 달라진 점:
+         *   1. isAllowed(CMD_HOMING) 체크 추가
+         *   2. 실행 전 setState(STATE_HOMING)
+         *   3. 성공 시 setState(STATE_IDLE)
+         *   4. 실패 시 setState(STATE_ERROR)
+         */
         else if (strcmp(keyword, "HOMING") == 0) {
+			 if (!isAllowed(CMD_HOMING)) continue; //상태 체크
+			 
+			 setState(STATE_HOMING);
             int result = runHomingSequence();
-            if (result != HOMING_OK) {
+			
+            if (result == HOMING_OK) {
+                setState(STATE_IDLE);        /* ← 상태: HOMING → IDLE */
+            } else {
                 printf("호밍 실패! 에러 코드: %d\n", result);
-                printf("-> 배선 및 스위치 상태 확인 후 다시 시도하세요.\n");
-            }
+                setState(STATE_ERROR);       /* ← 상태: HOMING → ERROR */
+                printf("-> RESET 명령으로 복구하세요.\n");
+            }				
         }
+		
+		// HOME X
         else if (strcmp(keyword, "HOMEX") == 0) {
+			if (!isAllowed(CMD_HOMING)) continue; //상태 체크
+			
+			 setState(STATE_HOMING);			
             int result = homeAxisX();
-            if (result != HOMING_OK) {
+			
+            if (result == HOMING_OK) {
+                setState(STATE_IDLE);
+            } else {
                 printf("X축 호밍 실패! 에러 코드: %d\n", result);
+                setState(STATE_ERROR);
+                printf("-> RESET 명령으로 복구하세요.\n");
             }
         }
+		
+        /* ── HOMEY ── */
         else if (strcmp(keyword, "HOMEY") == 0) {
+            if (!isAllowed(CMD_HOMING)) continue;
+ 
+            setState(STATE_HOMING);
             int result = homeAxisY();
-            if (result != HOMING_OK) {
+ 
+            if (result == HOMING_OK) {
+                setState(STATE_IDLE);
+            } else {
                 printf("Y축 호밍 실패! 에러 코드: %d\n", result);
+                setState(STATE_ERROR);
+                printf("-> RESET 명령으로 복구하세요.\n");
             }
         }
+ 
+        /* ── LIMIT: 상태 무관 ── */
         else if (strcmp(keyword, "LIMIT") == 0) {
             int x_state = isXLimitTriggered();
-            int y_state = isYLimitTriggered(); /* 수정: 원본은 isXLimitTriggered 중복 */
+            int y_state = isYLimitTriggered();
             printf("\n===== 리미트 스위치 상태 =====\n");
             printf("  X_LIMIT_MIN (GPIO %d): %s\n",
                    X_LIMIT_MIN, x_state ? "감지됨 [LOW]" : "미감지 [HIGH]");
             printf("  Y_LIMIT_MIN (GPIO %d): %s\n",
                    Y_LIMIT_MIN, y_state ? "감지됨 [LOW]" : "미감지 [HIGH]");
             printf("==============================\n");
+        }
 
-		}
-        /*
-         * GCODE 명령어
-         * - G-code 한 줄을 직접 입력해서 즉시 실행
-         * - 사용법: CMD> GCODE G1 X50 Y30 F3000
-         *
-         * sscanf에서 "%*s %[^\n]":
-         *   %*s    : 첫 단어(GCODE)를 읽고 버림
-         *   %[^\n] : 나머지 줄 전체를 문자열로 읽음
-         *            (공백 포함, 개행 전까지)
-         */
+		// GCODE
 		 else if (strcmp(keyword,"GCODE") == 0){
+            if (!isAllowed(CMD_GCODE)) continue;
 			 char gcode_line[100];
 			 if (sscanf(command,"%*s %[^\n]", gcode_line) == 1){
 				 runGcodeLine(gcode_line);
@@ -362,20 +316,55 @@ void runCommandLoop(void) {
 			 }
 		 }
 		 
-	    /*
-         * GFILE 명령어
-         * - .gcode 파일을 읽어 순차 실행
-         * - 사용법: CMD> GFILE test.gcode
+        /* ── GFILE: 상태 전환 포함 ← Step 18 핵심 변경 ── */
+        /*
+         * 이전 코드와 달라진 점:
+         *   1. isAllowed(CMD_GFILE) 체크 추가
+         *   2. 실행 전 setState(STATE_RUNNING)
+         *   3. 실행 완료(성공/실패 모두) 후 setState(STATE_IDLE)
+         *
+         * 왜 실패 시에도 IDLE로 돌아오는가?
+         *   파일 열기 실패는 "시스템 오류"가 아님
+         *   파일이 없는 것이지 하드웨어 문제가 아니므로
+         *   IDLE로 돌아와 다시 명령을 받을 수 있게 함
          */
 		 else if (strcmp(keyword, "GFILE") == 0){
+            if (!isAllowed(CMD_GFILE)) continue;
+
 			 char fname[100];
 			 if (sscanf(command,"%*s %s",fname) == 1){
-				 executeGcodeFile(fname);
+				 setState(STATE_RUNNING);
+				 int result = executeGcodeFile(fname);
+				 setState(STATE_IDLE);
+				 
+				 if (result != 0) {
+					 printf("-> 파일 실행 중 문제가 발생했습니다.\n");
+				 }
 			 } else {
 	                printf("오류: 파일명을 입력하세요 (예: GFILE test.gcode)\n");
             }
         }			 
 
+		// STATUS: 현재 상태 출력
+		else if (strcmp(keyword,"STATUS")==0) {
+			printState();
+		}
+		
+        /* ── RESET: ERROR 상태 복구 (Step 18 신규 추가) ── */
+        /*
+         * ERROR 상태에서 IDLE로 복구
+         * isAllowed(CMD_RESET)이 ERROR 상태에서만 true를 반환
+         *
+         * 실제 산업 장비에서는 RESET 전에 안전 확인 절차가 있지만
+         * 여기서는 학습 목적으로 단순하게 구현
+         */
+		else if (strcmp(keyword,"RESET") == 0) {
+			if(!isAllowed(CMD_RESET)) continue;
+            printf("-> 오류 상태 복구 중...\n");
+            setState(STATE_IDLE);               /* ← 상태: ERROR → IDLE */
+            printf("-> 복구 완료! 명령을 다시 입력하세요.\n");
+        }			
+		 
 		else {
 			printf("알 수 없는 명령어: %s\n", keyword);
 		}
