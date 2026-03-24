@@ -8,6 +8,7 @@
  * - Y축을 추가해서 제작 
  * main.c
  */
+ #include "interrupt.h"
  #include "configuration.h"
  #include "accel.h"
  #include "command.h" // <- 추가
@@ -51,8 +52,12 @@
     printf("Y축 설정: %.1f steps/mm\n", y_axis.steps_per_mm);
 
 	// ========= 명령어 시스템 시작 =============
+    initLimitSwitches();
+    initInterrupts();
+	initSoftLimit();    /* ← Step 20 추가 */
 	initCommandSystem();
 	runCommandLoop();
+
 	//========================================
 
     

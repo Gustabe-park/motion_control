@@ -28,4 +28,19 @@
  #define HOMING_MAX_MM		 	200.0f		// 호밍 최대 탐색 거리 
  #define HOMING_BACKOFF_MM		2.0f		// 스위치 감지 후 살짝 후퇴 거리 (mm)
  
+ // 기존 코드 아래에 추가
+
+// ========= 소프트 리미트 설정 (Step 20) =========
+// 물리 한계보다 안쪽으로 설정 → 안전 마진 확보
+// 예: 실제 기계 이동 가능 범위가 120mm라면,
+//     소프트 리미트를 100mm로 설정 → 20mm 안전 마진
+#define SOFT_LIMIT_X_MIN    0.0f    // X축 최솟값 (mm)
+#define SOFT_LIMIT_X_MAX    200.0f  // X축 최댓값 (mm)
+#define SOFT_LIMIT_Y_MIN    0.0f    // Y축 최솟값 (mm)
+#define SOFT_LIMIT_Y_MAX    200.0f  // Y축 최댓값 (mm)
+ 
+// ========= 인터럽트 설정 (Step 19) =========
+#define ESTOP_PIN       26      // 비상 정지 버튼 GPIO 핀 (실제 배선에 맞게 수정)
+#define DEBOUNCE_MS     50      // 디바운싱 시간 (ms) - 50ms 이내 재진입 무시 
+
  #endif //CONFIGURATION_H

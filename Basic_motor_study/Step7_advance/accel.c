@@ -4,6 +4,7 @@
  * 모터 제어 및 가속도 제어
  */
  
+ #include "interrupt.h"
  #include "configuration.h"
  #include "accel.h"
  #include <wiringPi.h>
@@ -46,7 +47,17 @@
 	
 	for (int i = 0 ; i < steps ; i++) {
 		int delayUs;
-		
+        
+		/* ── 비상 정지 체크 (Step 19 추가) ──
+         * 매 step마다 확인 → ISR이 플래그 세우면 즉시 탈출
+         * return이므로 위치 업데이트(moveAxisAccel)로 돌아가지 않음
+         * → current_mm은 실제 위치와 어긋남 → 반드시 재호밍 필요!
+         */
+        if (g_emergency_stop) {
+            printf("\n[비상 정지] 모터 즉시 정지! (%d/%d steps 완료)\n", i, steps);
+            printf("-> 위치 정보가 부정확합니다. 재시작 후 HOMING을 실행하세요.\n");
+            return;
+        }		
 		//가속 구간
 		if (i < accelSteps) {
 		//점진적으로 빨라짐
@@ -123,7 +134,7 @@
 	 }
 	 
 	 //delay(us) = 1,000,000 / steps/sbrk
-	 int delay_us = (int)(1000000.0 / steps_per_sec);
+	 int delay_us = (int)(500000.0 / steps_per_sec);
 	 
 	 return delay_us;
  }

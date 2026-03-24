@@ -12,7 +12,8 @@
  *   - 문자열 파싱        (→ gcode_parser.c 담당)
  *   - 모터 직접 제어     (→ gcode_parser.c → accel.c 담당)
  */
- 
+
+ #include "interrupt.h" 
  #include "gcode_runner.h"
  #include "gcode_parser.h"
  #include "accel.h"
@@ -50,6 +51,20 @@
          * runGcodeLine() 하나로 파싱 + 빈 줄 건너뜀 + 실행 처리
          * 반환값: 0 = 실행됨, -1 = 건너뜀
          */
+		 
+        /* ── 비상 정지 체크 (Step 19 추가) ──
+         * G-code 줄과 줄 사이에서 확인
+         * accel.c의 체크가 모터 루프 중간 정지라면,
+         * 이쪽은 명령어 사이의 정지 담당
+         */
+        if (g_emergency_stop) {
+            printf("\n[비상 정지] G-code 실행 중단!\n");
+            printf("-> %d번째 명령까지 실행됨\n", exec_count);
+            printf("-> RESUME 후 HOMING을 권장합니다.\n");
+            fclose(fp);
+            return -2;  /* -1: 파일 오류, -2: 비상 정지 */
+        }		 
+		 
 		if (runGcodeLine(line) == 0){
 			exec_count++;
 		}

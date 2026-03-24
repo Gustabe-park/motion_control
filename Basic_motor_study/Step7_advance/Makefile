@@ -8,7 +8,7 @@ TARGET = step7
 
 # 소스 파일들
 SRCS = main.c accel.c command.c teaching.c interpolate.c homing.c \
-       gcode_parser.c gcode_runner.c       
+       gcode_parser.c gcode_runner.c statemachine.c interrupt.c softlimit.c       
 
 # 오브젝트 파일들 (.c를 .o로 변경)
 OBJS = $(SRCS:.c=.o)

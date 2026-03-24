@@ -21,6 +21,7 @@
  *      수정 후: const GcodeCommand *cmd
  */
 
+#include "softlimit.h"
 #include "gcode_parser.h"
 #include "accel.h"      /* x_axis, y_axis, moveAxisBySpeed() */
 #include "command.h"    /* g_accel_mm_s2 */
@@ -214,6 +215,14 @@ void executeGcode(const GcodeCommand *cmd) {  /* ← 오타 수정 */
             if (cmd->has_x) printf("X=%.2f ", cmd->x);
             if (cmd->has_y) printf("Y=%.2f ", cmd->y);
             printf("F=%.0f(%.1fmm/s)\n", cmd->feedrate, speed_mm_s);
+
+			/* ── 소프트 리미트 검증 (Step 20 추가) ──
+			* 파싱은 성공했지만, 좌표가 작업 영역을 벗어나면 이동 취소
+			* has_x, has_y를 그대로 전달 → 없는 축은 검사 안 함
+			*/
+			if (!checkSoftLimit(cmd->x, cmd->y, cmd->has_x, cmd->has_y)) {
+				return;  // 에러 메세지 출력
+			}
 
             /*
              * 이동 분기:

@@ -11,7 +11,9 @@
  * 5. STATUS 명령 추가: 현재 상태 출력
  * 6. RESET 명령 추가: ERROR 상태 복구
  */
- 
+
+#include "softlimit.h"   /* ← Step 20 추가 */
+#include "interrupt.h"   /* ← 추가 */ 
 #include "interpolate.h"	/* 선형 보간 기능 사용 */
 #include "command.h"
 #include "accel.h"
@@ -75,6 +77,14 @@ void runCommandLoop(void) {
     printf(" --- G-code ---\n");                          /* ← 추가 */
     printf(" GCODE <명령어>  - G-code 한 줄 직접 실행\n");/* ← 추가 */
     printf(" GFILE <파일명>  - .gcode 파일 실행\n");      /* ← 추가 */
+	printf(" --- 비상 정지 ---\n");
+	printf(" ESTOP           - 비상 정지 (테스트용 수동 트리거)\n");
+	printf(" RESUME          - 비상 정지 해제 (재시작 절차)\n");
+	printf(" STATUS          - 비상 정지 상태 확인\n");
+	printf(" --- 소프트 리미트 ---\n");
+	printf(" SLIMIT          - 소프트 리미트 설정 확인\n");
+	printf(" SLENABLE        - 소프트 리미트 활성화\n");
+	printf(" SLDISABLE       - 소프트 리미트 비활성화\n");
     printf(" QUIT            - 종료\n\n");
 
 	 while (g_running) {
@@ -123,6 +133,7 @@ void runCommandLoop(void) {
 			 if (!isAllowed(CMD_MOVE)) continue; //상태 체크
 			 float target;
 			 if (sscanf(command,"%*s %f", &target) == 1 ){
+				 if (!checkSoftLimit(target, 0.0f, true, false)) continue; /* ← 추가 */
 				 printf("-> X축 %.2fmm로 이동 중...\n", target);
 				 moveAxisBySpeed(&x_axis, target, g_speed_mm_s, g_accel_mm_s2);
 				 printf("->이동 완료!\n");
@@ -136,6 +147,7 @@ void runCommandLoop(void) {
 			 if (!isAllowed(CMD_MOVE)) continue; //상태 체크			 
 			 float target;
 			 if (sscanf(command,"%*s %f", &target) == 1 ){
+				 if (!checkSoftLimit(0.0f, target, true, false)) continue; /* ← 추가 */
 				 printf("-> Y축 %.2fmm로 이동 중...\n", target);
 				 moveAxisBySpeed(&y_axis, target, g_speed_mm_s, g_accel_mm_s2);
 				 printf("->이동 완료!\n");
@@ -230,6 +242,7 @@ void runCommandLoop(void) {
 			 if (!isAllowed(CMD_MOVE)) continue; //상태 체크
             float x_target, y_target;
             if (sscanf(command, "%*s %f %f", &x_target, &y_target) == 2) {
+		        if (!checkSoftLimit(x_target, y_target, true, true)) continue; /* ← 추가 */		
                 printf("-> X=%.2fmm, Y=%.2fmm 직선 이동 중...\n", x_target, y_target);
                 moveLinear(x_target, y_target, g_speed_mm_s, g_accel_mm_s2);
                 printf("-> 이동 완료!\n");
@@ -254,6 +267,7 @@ void runCommandLoop(void) {
 			
             if (result == HOMING_OK) {
                 setState(STATE_IDLE);        /* ← 상태: HOMING → IDLE */
+				enableSoftLimit();  /* ← Step 20 추가: 호밍 완료 → 위치 확정 → 소프트 리미트 ON */
             } else {
                 printf("호밍 실패! 에러 코드: %d\n", result);
                 setState(STATE_ERROR);       /* ← 상태: HOMING → ERROR */
@@ -343,13 +357,55 @@ void runCommandLoop(void) {
 			 } else {
 	                printf("오류: 파일명을 입력하세요 (예: GFILE test.gcode)\n");
             }
-        }			 
+        }
+
+		/*
+		 * ESTOP 명령어
+		 * - 소프트웨어적으로 비상 정지 트리거 (테스트 및 수동 정지용)
+		 * - 실제 상황에서는 ISR이 자동으로 처리
+		 */
+		else if (strcmp(keyword, "ESTOP") == 0) {
+				g_emergency_stop = true;
+				printf("[비상 정지] 수동 트리거 완료.\n");
+				printf("-> 모터가 정지됩니다. RESUME으로 해제하세요.\n");
+				}
+				
+		/*
+		 * RESUME 명령어
+		 * - 비상 정지 해제 절차 실행
+		 * - 스위치 물리 상태 확인 후 플래그 해제
+		 */
+		else if (strcmp(keyword, "RESUME") == 0) {
+				resetEmergencyStop();
+				}
 
 		// STATUS: 현재 상태 출력
 		else if (strcmp(keyword,"STATUS")==0) {
 			printState();
+			printf("\n===== 시스템 상태 =====\n");
+			printf("비상 정지: %s\n", g_emergency_stop ? "발동 중 [위험]" : "정상");
+			printf("X 리미트 : %s\n", isXLimitTriggered() ? "감지됨 [LOW]" : "미감지 [HIGH]");
+			printf("Y 리미트 : %s\n", isYLimitTriggered() ? "감지됨 [LOW]" : "미감지 [HIGH]");
+			printf("현재 위치: X=%.2fmm, Y=%.2fmm\n",
+					x_axis.current_mm, y_axis.current_mm);
+			printf("=======================\n");
 		}
-		
+
+		/* SLIMIT: 소프트 리미트 설정 확인 */
+		else if (strcmp(keyword, "SLIMIT") == 0) {
+			printSoftLimitStatus();
+		}
+
+		/* SLENABLE: 수동 활성화 (호밍 없이 켤 때) */
+		else if (strcmp(keyword, "SLENABLE") == 0) {
+			enableSoftLimit();
+		}
+
+		/* SLDISABLE: 수동 비활성화 (호밍 전 이동 테스트 등) */
+		else if (strcmp(keyword, "SLDISABLE") == 0) {
+			disableSoftLimit();
+		}
+
         /* ── RESET: ERROR 상태 복구 (Step 18 신규 추가) ── */
         /*
          * ERROR 상태에서 IDLE로 복구
